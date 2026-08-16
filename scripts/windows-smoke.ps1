@@ -169,7 +169,8 @@ try {
             Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine |
             Format-Table -AutoSize |
             Out-String
-        throw "Bundled dsh backend did not start within 60 seconds. Observed processes: $observed"
+        $appError = Get-Content $stderrLog -Raw -ErrorAction SilentlyContinue
+        throw "Bundled dsh backend did not start within 60 seconds. App stderr: $appError Observed processes: $observed"
     }
 
     $backend | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine |
