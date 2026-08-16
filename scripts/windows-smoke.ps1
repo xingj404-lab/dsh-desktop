@@ -13,35 +13,32 @@ $consoleProbe = $null
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 
 function New-ConsoleProbe {
-    $outputPath = Join-Path $LogDirectory "console-probe-$PID.exe"
+    $outputPath = Join-Path $LogDirectory "console-probe-$PID.ps1"
     $source = @'
-using System;
+param([uint32]$TargetProcessId)
+
+Add-Type -TypeDefinition @"
 using System.Runtime.InteropServices;
 
-internal static class Program
+internal static class NativeConsole
 {
     [DllImport("kernel32.dll")]
-    private static extern bool FreeConsole();
+    internal static extern bool FreeConsole();
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AttachConsole(uint processId);
-
-    private static int Main(string[] args)
-    {
-        if (args.Length != 1 || !uint.TryParse(args[0], out uint processId))
-        {
-            return 20;
-        }
-
-        // A console application inherits the CI runner's console. Detach first,
-        // then ask Windows whether the backend owns a console of its own.
-        FreeConsole();
-        return AttachConsole(processId) ? 10 : 0;
-    }
+    internal static extern bool AttachConsole(uint processId);
 }
+"@
+
+# This child pwsh process inherits the CI runner's console. Detach it first,
+# then ask Windows whether the backend owns a console of its own.
+[NativeConsole]::FreeConsole() | Out-Null
+if ([NativeConsole]::AttachConsole($TargetProcessId)) {
+    exit 10
+}
+exit 0
 '@
-    Add-Type -TypeDefinition $source -OutputAssembly $outputPath `
-        -OutputType ConsoleApplication
+    Set-Content -Path $outputPath -Value $source
     return $outputPath
 }
 
@@ -51,7 +48,8 @@ function Assert-ProcessHasNoConsole {
     if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
         throw "Bundled dsh backend exited before the console check"
     }
-    $probe = Start-Process -FilePath $consoleProbe -ArgumentList "$ProcessId" `
+    $probe = Start-Process -FilePath "$PSHOME\pwsh.exe" `
+        -ArgumentList @("-NoProfile", "-File", "`"$consoleProbe`"", "$ProcessId") `
         -Wait -PassThru -WindowStyle Hidden
     switch ($probe.ExitCode) {
         0 { return }
