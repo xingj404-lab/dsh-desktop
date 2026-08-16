@@ -235,7 +235,9 @@ try {
         $backend = Get-VerifiedBackendProcess -BackendProcessId $backend.ProcessId `
             -ParentProcessId $appProcess.Id -ExpectedInstallRoot $installRoot
         if (-not $backend) {
-            throw "Bundled dsh backend exited before becoming ready"
+            Start-Sleep -Milliseconds 250
+            $appError = Get-Content $stderrLog -Raw -ErrorAction SilentlyContinue
+            throw "Bundled dsh backend exited before becoming ready. App stderr: $appError"
         }
         try {
             $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
