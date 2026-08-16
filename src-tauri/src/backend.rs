@@ -104,29 +104,84 @@ fn pick_free_port() -> Result<u16, String> {
     Ok(port)
 }
 
+/// Create and validate the app-owned directory used as the backend cwd.
+///
+/// In particular, this rejects Windows drive-relative paths such as `D:`. Node
+/// resolves those paths relative to per-drive process state and can reduce its
+/// entry point to the drive itself, failing with `EISDIR ... lstat 'D:'`.
+#[cfg(any(windows, test))]
+fn prepare_backend_workspace(app_data_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !app_data_dir.is_absolute() {
+        return Err(format!(
+            "backend app data directory must be absolute: {}",
+            app_data_dir.display()
+        ));
+    }
+
+    let workspace = app_data_dir.join("backend-workspace");
+    std::fs::create_dir_all(&workspace).map_err(|e| {
+        format!(
+            "failed to create backend workspace {}: {e}",
+            workspace.display()
+        )
+    })?;
+
+    workspace.canonicalize().map_err(|e| {
+        format!(
+            "failed to resolve backend workspace {}: {e}",
+            workspace.display()
+        )
+    })
+}
+
+/// Validate an existing system-resolved directory before using it as a cwd.
+/// This keeps the historical home-directory workspace on macOS/Linux without
+/// trusting a raw HOME environment variable.
+#[cfg(not(windows))]
+fn prepare_existing_workspace(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "backend working directory must be absolute: {}",
+            path.display()
+        ));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "backend working directory is not a directory: {}",
+            path.display()
+        ));
+    }
+    path.canonicalize().map_err(|e| {
+        format!(
+            "failed to resolve backend working directory {}: {e}",
+            path.display()
+        )
+    })
+}
+
 /// A stable working directory for the backend. dsh groups sessions by
 /// `process.cwd()`, so pinning this keeps the session namespace identical no
-/// matter how the app was launched. Windows has no `$HOME`, so use
-/// `%USERPROFILE%` there; on Unix use `$HOME` (falling back to `/`).
-fn default_workspace_dir() -> std::path::PathBuf {
+/// matter how the app was launched.
+fn default_workspace_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     #[cfg(windows)]
     {
-        if let Ok(p) = std::env::var("USERPROFILE") {
-            if !p.is_empty() {
-                return std::path::PathBuf::from(p);
-            }
-        }
-        // Last resort: the C: drive root (a real absolute directory).
-        std::path::PathBuf::from("C:\\")
+        // Use the Windows Known Folder-backed Tauri path instead of HOME or
+        // USERPROFILE. Environment variables can be absent, redirected, or
+        // malformed as a bare drive letter on real user machines.
+        let app_data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("failed to resolve app local data directory: {e}"))?;
+        prepare_backend_workspace(&app_data_dir)
     }
 
     #[cfg(not(windows))]
     {
-        std::env::var("HOME")
-            .ok()
-            .filter(|h| !h.is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+        let home_dir = app
+            .path()
+            .home_dir()
+            .map_err(|e| format!("failed to resolve system home directory: {e}"))?;
+        prepare_existing_workspace(&home_dir)
     }
 }
 
@@ -174,8 +229,9 @@ fn spawn_backend(app: &AppHandle) -> Result<(Child, String, u16, Arc<Mutex<Strin
         }
     };
 
-    // Pin the working directory so session storage is stable across launches.
-    command.current_dir(default_workspace_dir());
+    // Resolve and validate the cwd before spawning. Never let a drive-relative
+    // path such as `D:` reach Node on Windows.
+    command.current_dir(default_workspace_dir(app)?);
 
     let mut child = command
         .stdout(Stdio::piped())
@@ -213,6 +269,50 @@ enum ReadyOutcome {
     Ready,
     Exited(std::process::ExitStatus),
     TimedOut,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_backend_workspace;
+    #[cfg(not(windows))]
+    use super::prepare_existing_workspace;
+    use std::path::Path;
+
+    #[test]
+    fn rejects_a_windows_drive_relative_app_data_path() {
+        let error = prepare_backend_workspace(Path::new("D:"))
+            .expect_err("a bare drive letter must never reach Command::current_dir");
+
+        assert!(error.contains("absolute"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn creates_a_dedicated_backend_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-desktop-backend-workspace-test-{}",
+            std::process::id()
+        ));
+        let workspace = prepare_backend_workspace(&root).expect("workspace should be created");
+
+        assert_eq!(
+            workspace,
+            root.join("backend-workspace")
+                .canonicalize()
+                .expect("created workspace should canonicalize")
+        );
+        assert!(workspace.is_dir());
+
+        std::fs::remove_dir_all(root).expect("test workspace should be removable");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rejects_a_relative_unix_home_path() {
+        let error = prepare_existing_workspace(Path::new("relative/home"))
+            .expect_err("a relative HOME must never reach Command::current_dir");
+
+        assert!(error.contains("absolute"), "unexpected error: {error}");
+    }
 }
 
 /// Terminate a backend process by pid.

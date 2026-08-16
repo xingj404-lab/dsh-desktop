@@ -7,6 +7,15 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows**: backend startup no longer trusts `USERPROFILE` as its working
+  directory. It now uses a validated, app-owned local-data directory, preventing
+  bare drive paths such as `D:` from crashing Node with `EISDIR`.
+- **macOS/Linux**: backend startup now resolves the home directory through the
+  system path API and validates/canonicalizes it instead of directly trusting
+  `$HOME` or falling back to the filesystem root.
+
 ## [0.1.6] - 2026-08-15
 
 ### Fixed
