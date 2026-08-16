@@ -99,6 +99,19 @@ jobs:
           path: ${{ runner.temp }}/dsh-windows-smoke
           if-no-files-found: warn
 
+      - name: Run macOS smoke test
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/macos-smoke.sh "src-tauri/target/release/bundle/macos/DeepSeek Harness.app"
+
+      - name: Upload macOS smoke diagnostics
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-smoke-diagnostics
+          path: ${{ runner.temp }}/dsh-macos-smoke
+          if-no-files-found: warn
+
       - name: Collect and rename release assets
         shell: bash
         run: |

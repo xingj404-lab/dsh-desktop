@@ -1,0 +1,58 @@
+name: macos-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "codex/windows-runtime-smoke-test"
+    paths:
+      - ".github/workflows/macos-smoke.yml"
+      - "scripts/macos-smoke.sh"
+      - "scripts/bundle-backend.sh"
+      - "src-tauri/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "dsh-version"
+  pull_request:
+    paths:
+      - "scripts/macos-smoke.sh"
+      - "scripts/bundle-backend.sh"
+      - "src-tauri/**"
+      - "src/**"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Stage bundled backend
+        run: ./scripts/bundle-backend.sh
+      - name: Build current macOS application
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run build
+      - name: Run macOS smoke test
+        run: ./scripts/macos-smoke.sh "src-tauri/target/release/bundle/macos/DeepSeek Harness.app"
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-smoke-diagnostics
+          path: ${{ runner.temp }}/dsh-macos-smoke
+          if-no-files-found: warn

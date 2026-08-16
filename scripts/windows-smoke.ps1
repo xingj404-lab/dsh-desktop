@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 
 function Save-Diagnostics {
     Get-CimInstance Win32_Process |
-        Where-Object { $_.Name -in @("dsh-desktop.exe", "node.exe") } |
+        Where-Object { $_.Name -in @("dsh-desktop.exe", "DeepSeek Harness.exe", "node.exe") } |
         Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine |
         ConvertTo-Json -Depth 3 |
         Set-Content -Path "$LogDirectory\processes.json"
@@ -38,6 +38,30 @@ function Save-Diagnostics {
         Select-Object name, pv, location |
         Format-List |
         Out-File -FilePath "$LogDirectory\webview2.txt" -Width 240
+}
+
+function Get-VerifiedBackendProcess {
+    param(
+        [uint32]$BackendProcessId,
+        [uint32]$ParentProcessId,
+        [string]$ExpectedInstallRoot
+    )
+    $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $BackendProcessId" `
+        -ErrorAction SilentlyContinue
+    if (-not $candidate -or -not $candidate.ExecutablePath) {
+        return $null
+    }
+    $nodePath = [System.IO.Path]::GetFullPath($candidate.ExecutablePath)
+    if (
+        $candidate.Name -eq "node.exe" -and
+        $candidate.ParentProcessId -eq $ParentProcessId -and
+        $candidate.CommandLine -match "@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js" -and
+        $candidate.CommandLine -match "\sweb\s" -and
+        $nodePath.StartsWith($ExpectedInstallRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        return $candidate
+    }
+    return $null
 }
 
 function Find-InstalledApp {
@@ -208,9 +232,14 @@ try {
     $ready = $false
     $deadline = (Get-Date).AddSeconds(60)
     do {
+        $backend = Get-VerifiedBackendProcess -BackendProcessId $backend.ProcessId `
+            -ParentProcessId $appProcess.Id -ExpectedInstallRoot $installRoot
+        if (-not $backend) {
+            throw "Bundled dsh backend exited before becoming ready"
+        }
         try {
             $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
-            $ready = $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
+            $ready = $response.StatusCode -eq 200 -and $response.Content.Length -gt 0
         } catch {
             Start-Sleep -Seconds 1
         }
@@ -224,6 +253,11 @@ try {
     $appProcess.Refresh()
     if ($appProcess.HasExited) {
         throw "DeepSeek Harness exited after the backend became ready"
+    }
+    $backend = Get-VerifiedBackendProcess -BackendProcessId $backend.ProcessId `
+        -ParentProcessId $appProcess.Id -ExpectedInstallRoot $installRoot
+    if (-not $backend) {
+        throw "Bundled dsh backend exited during the startup soak"
     }
 
     "Application stayed alive and backend responded at $url" |
@@ -239,8 +273,12 @@ try {
     if ($backendProbe -and -not $backendProbe.HasExited) {
         Stop-Process -Id $backendProbe.Id -Force -ErrorAction SilentlyContinue
     }
-    if ($backend) {
-        Stop-Process -Id $backend.ProcessId -Force -ErrorAction SilentlyContinue
+    if ($backend -and $appProcess -and $installRoot) {
+        $verifiedBackend = Get-VerifiedBackendProcess -BackendProcessId $backend.ProcessId `
+            -ParentProcessId $appProcess.Id -ExpectedInstallRoot $installRoot
+        if ($verifiedBackend) {
+            Stop-Process -Id $verifiedBackend.ProcessId -Force -ErrorAction SilentlyContinue
+        }
     }
     if ($appProcess -and -not $appProcess.HasExited) {
         Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue

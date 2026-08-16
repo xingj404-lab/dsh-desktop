@@ -21,6 +21,11 @@ project uses [Semantic Versioning](https://semver.org/).
   system path API and validates/canonicalizes it instead of directly trusting
   `$HOME` or falling back to the filesystem root.
 
+### Added
+
+- Windows and macOS release builds now run packaged-application smoke tests and
+  verify that the bundled backend starts and serves HTTP before publication.
+
 ## [0.1.6] - 2026-08-15
 
 ### Fixed

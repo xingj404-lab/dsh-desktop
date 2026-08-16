@@ -15,6 +15,13 @@ on:
       - "package.json"
       - "package-lock.json"
       - "dsh-version"
+  pull_request:
+    paths:
+      - "scripts/windows-smoke.ps1"
+      - "src-tauri/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
 
 permissions:
   contents: read
