@@ -72,6 +72,33 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run build
 
+      - name: Install and run Windows smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer was not produced" }
+          try {
+            ./scripts/windows-smoke.ps1 -InstallerPath $installer.FullName
+          } catch {
+            $message = $_.Exception.Message.Replace("`r", " ").Replace("`n", " ")
+            Write-Output "::error title=Windows runtime smoke test failed::$message"
+            Get-ChildItem "$env:RUNNER_TEMP\dsh-windows-smoke" -File -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                Write-Host "===== $($_.Name) ====="
+                Get-Content $_.FullName -ErrorAction SilentlyContinue
+              }
+            throw
+          }
+
+      - name: Upload Windows smoke diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-smoke-diagnostics
+          path: ${{ runner.temp }}/dsh-windows-smoke
+          if-no-files-found: warn
+
       - name: Collect and rename release assets
         shell: bash
         run: |

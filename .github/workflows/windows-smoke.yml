@@ -1,0 +1,66 @@
+name: windows-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released version to test
+        required: true
+        default: "0.1.7"
+  push:
+    branches:
+      - "codex/windows-runtime-smoke-test"
+    paths:
+      - ".github/workflows/windows-smoke.yml"
+      - "scripts/windows-smoke.ps1"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out smoke test
+        uses: actions/checkout@v5
+
+      - name: Resolve release version
+        id: release
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { "0.1.7" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Download released Windows installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release.outputs.version }}"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/DeepSeek.Harness_${version}_x64-setup.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\dsh-setup.exe"
+
+      - name: Install and run Windows smoke test
+        shell: pwsh
+        run: |
+          try {
+            ./scripts/windows-smoke.ps1 -InstallerPath "$env:RUNNER_TEMP\dsh-setup.exe"
+          } catch {
+            $message = $_.Exception.Message.Replace("`r", " ").Replace("`n", " ")
+            Write-Output "::error title=Windows runtime smoke test failed::$message"
+            Get-ChildItem "$env:RUNNER_TEMP\dsh-windows-smoke" -File -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                Write-Host "===== $($_.Name) ====="
+                Get-Content $_.FullName -ErrorAction SilentlyContinue
+              }
+            throw
+          }
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-smoke-diagnostics
+          path: ${{ runner.temp }}/dsh-windows-smoke
+          if-no-files-found: warn
