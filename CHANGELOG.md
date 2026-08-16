@@ -7,7 +7,7 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.7] - 2026-08-16
+## [0.1.8] - 2026-08-16
 
 ### Fixed
 
@@ -17,6 +17,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - **Windows**: the app-owned backend directory is no longer canonicalized to
   verbatim `\\?\` syntax before spawning Node, which could prevent the bundled
   backend from starting.
+- **Windows**: Tauri resource paths are converted from verbatim Windows syntax
+  before they are passed to the bundled Node runtime, preventing the packaged
+  `dsh` entry point from exiting immediately on first launch.
 - **macOS/Linux**: backend startup now resolves the home directory through the
   system path API and validates/canonicalizes it instead of directly trusting
   `$HOME` or falling back to the filesystem root.
