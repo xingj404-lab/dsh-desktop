@@ -231,7 +231,13 @@ fn spawn_backend(app: &AppHandle) -> Result<(Child, String, u16, Arc<Mutex<Strin
 
     // Resolve and validate the cwd before spawning. Never let a drive-relative
     // path such as `D:` reach Node on Windows.
-    command.current_dir(default_workspace_dir(app)?);
+    let workspace = default_workspace_dir(app)?;
+    command.current_dir(&workspace);
+
+    eprintln!(
+        "[backend] starting bundled server on {url} with cwd {}",
+        workspace.display()
+    );
 
     let mut child = command
         .stdout(Stdio::piped())
@@ -390,6 +396,9 @@ pub fn start_watchdog(app: &AppHandle) {
                     }
                     ReadyOutcome::Exited(status) => {
                         let tail = err_sink.lock().unwrap().clone();
+                        eprintln!(
+                            "[backend] exited before ready ({status}); stderr: {tail}"
+                        );
                         let _ = child.wait(); // reap
                         *state.pid.lock().unwrap() = None;
                         *state.url.lock().unwrap() = None;
@@ -403,6 +412,10 @@ pub fn start_watchdog(app: &AppHandle) {
                     }
                     ReadyOutcome::TimedOut => {
                         let tail = err_sink.lock().unwrap().clone();
+                        eprintln!(
+                            "[backend] did not become ready within {:?}; stderr: {tail}",
+                            STARTUP_TIMEOUT
+                        );
                         graceful_kill(child.id());
                         let _ = child.wait();
                         *state.pid.lock().unwrap() = None;
@@ -421,6 +434,7 @@ pub fn start_watchdog(app: &AppHandle) {
                 }
             }
             Err(e) => {
+                eprintln!("[backend] failed to start: {e}");
                 errored = true;
                 emit(app, "error", None, Some(e));
             }
