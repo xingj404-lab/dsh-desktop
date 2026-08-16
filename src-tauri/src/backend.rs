@@ -126,12 +126,12 @@ fn prepare_backend_workspace(app_data_dir: &std::path::Path) -> Result<std::path
         )
     })?;
 
-    workspace.canonicalize().map_err(|e| {
-        format!(
-            "failed to resolve backend workspace {}: {e}",
-            workspace.display()
-        )
-    })
+    // Do not canonicalize this path on Windows. Rust canonicalization changes
+    // it to verbatim `\\?\C:\...` syntax, which is not accepted reliably as a
+    // child process working directory and prevents the bundled Node from
+    // starting. The app-data base is already absolute and create_dir_all above
+    // proves the resulting directory is usable.
+    Ok(workspace)
 }
 
 /// Validate an existing system-resolved directory before using it as a cwd.
@@ -296,9 +296,8 @@ mod tests {
 
         assert_eq!(
             workspace,
-            root.join("backend-workspace")
-                .canonicalize()
-                .expect("created workspace should canonicalize")
+            root.join("backend-workspace"),
+            "the child-process cwd must retain normal path syntax"
         );
         assert!(workspace.is_dir());
 

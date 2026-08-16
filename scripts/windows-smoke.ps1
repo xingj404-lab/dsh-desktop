@@ -113,9 +113,6 @@ try {
 
     $workspace = "$env:LOCALAPPDATA\ai.deepseek.harness.desktop\backend-workspace"
     New-Item -ItemType Directory -Force -Path $workspace | Out-Null
-    # Rust's std::fs::canonicalize returns a verbatim (\\?\) path on Windows.
-    # Match the application's Command::current_dir input exactly.
-    $workspace = "\\?\$workspace"
 
     $listener = [System.Net.Sockets.TcpListener]::new(
         [System.Net.IPAddress]::Loopback,

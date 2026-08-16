@@ -2,17 +2,19 @@ name: windows-smoke
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Released version to test
-        required: true
-        default: "0.1.7"
   push:
     branches:
       - "codex/windows-runtime-smoke-test"
     paths:
       - ".github/workflows/windows-smoke.yml"
       - "scripts/windows-smoke.ps1"
+      - "src-tauri/src/backend.rs"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "dsh-version"
 
 permissions:
   contents: read
@@ -20,32 +22,53 @@ permissions:
 jobs:
   smoke:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - name: Check out smoke test
         uses: actions/checkout@v5
 
-      - name: Resolve release version
-        id: release
-        shell: pwsh
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { "0.1.7" }
-          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
 
-      - name: Download released Windows installer
-        shell: pwsh
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Stage self-contained Windows backend
+        shell: bash
         run: |
-          $version = "${{ steps.release.outputs.version }}"
-          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/DeepSeek.Harness_${version}_x64-setup.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\dsh-setup.exe"
+          DSH_VERSION="$(cat dsh-version)"
+          mkdir -p resources/backend
+          cp "$(node -e 'process.stdout.write(process.execPath)')" resources/backend/node.exe
+          cd resources/backend
+          npm init -y >/dev/null 2>&1
+          npm install "@deepseek-ai/dsh@${DSH_VERSION}"
+
+      - name: Build current Windows installer
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run build
 
       - name: Install and run Windows smoke test
         shell: pwsh
         run: |
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer was not produced" }
           try {
-            ./scripts/windows-smoke.ps1 -InstallerPath "$env:RUNNER_TEMP\dsh-setup.exe"
+            ./scripts/windows-smoke.ps1 -InstallerPath $installer.FullName
           } catch {
             $message = $_.Exception.Message.Replace("`r", " ").Replace("`n", " ")
             Write-Output "::error title=Windows runtime smoke test failed::$message"
