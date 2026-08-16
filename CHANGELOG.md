@@ -7,6 +7,14 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-16
+
+### Fixed
+
+- **Windows**: the bundled Node/dsh backend and shutdown helper now run without
+  creating a visible console window. Closing an accidental terminal could stop
+  the backend and trigger an endless watchdog restart loop.
+
 ## [0.1.8] - 2026-08-16
 
 ### Fixed

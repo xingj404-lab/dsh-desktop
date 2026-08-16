@@ -8,8 +8,57 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $appProcess = $null
 $backend = $null
+$consoleProbe = $null
 
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+
+function New-ConsoleProbe {
+    $outputPath = Join-Path $LogDirectory "console-probe-$PID.exe"
+    $source = @'
+using System;
+using System.Runtime.InteropServices;
+
+internal static class Program
+{
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(uint processId);
+
+    private static int Main(string[] args)
+    {
+        if (args.Length != 1 || !uint.TryParse(args[0], out uint processId))
+        {
+            return 20;
+        }
+
+        // A console application inherits the CI runner's console. Detach first,
+        // then ask Windows whether the backend owns a console of its own.
+        FreeConsole();
+        return AttachConsole(processId) ? 10 : 0;
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -OutputAssembly $outputPath `
+        -OutputType ConsoleApplication
+    return $outputPath
+}
+
+function Assert-ProcessHasNoConsole {
+    param([uint32]$ProcessId)
+
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        throw "Bundled dsh backend exited before the console check"
+    }
+    $probe = Start-Process -FilePath $consoleProbe -ArgumentList "$ProcessId" `
+        -Wait -PassThru -WindowStyle Hidden
+    switch ($probe.ExitCode) {
+        0 { return }
+        10 { throw "Bundled dsh backend owns a console window" }
+        default { throw "Console probe failed with exit code $($probe.ExitCode)" }
+    }
+}
 
 function Save-Diagnostics {
     Get-CimInstance Win32_Process |
@@ -114,6 +163,7 @@ function Find-InstalledApp {
 }
 
 try {
+    $consoleProbe = New-ConsoleProbe
     $installer = (Resolve-Path $InstallerPath).Path
     $install = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
     if ($install.ExitCode -ne 0) {
@@ -205,6 +255,8 @@ try {
         throw "Bundled dsh backend did not respond at $url"
     }
 
+    Assert-ProcessHasNoConsole -ProcessId $backend.ProcessId
+
     Start-Sleep -Seconds 10
     $appProcess.Refresh()
     if ($appProcess.HasExited) {
@@ -215,6 +267,7 @@ try {
     if (-not $backend) {
         throw "Bundled dsh backend exited during the startup soak"
     }
+    Assert-ProcessHasNoConsole -ProcessId $backend.ProcessId
 
     "Application stayed alive and backend responded at $url" |
         Set-Content -Path "$LogDirectory\result.txt"
@@ -235,5 +288,8 @@ try {
     }
     if ($appProcess -and -not $appProcess.HasExited) {
         Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($consoleProbe) {
+        Remove-Item $consoleProbe -Force -ErrorAction SilentlyContinue
     }
 }

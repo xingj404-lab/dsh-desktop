@@ -14,6 +14,19 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 const ERROR_RESTART_DELAY: Duration = Duration::from_secs(3);
 const STDOUT_TAIL_CAP: usize = 8192;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Prevent console-subsystem helpers such as the bundled Node runtime and
+/// `taskkill.exe` from creating a visible terminal window. The desktop app
+/// still captures child stdout/stderr through pipes.
+#[cfg(windows)]
+fn hide_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
 /// Payload for the `backend-status` event consumed by the splash page.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,6 +281,8 @@ fn spawn_backend(app: &AppHandle) -> Result<(Child, String, u16, Arc<Mutex<Strin
     // path such as `D:` reach Node on Windows.
     let workspace = default_workspace_dir(app)?;
     command.current_dir(&workspace);
+    #[cfg(windows)]
+    hide_console_window(&mut command);
 
     eprintln!(
         "[backend] starting bundled server on {url} with cwd {}",
@@ -380,8 +395,10 @@ pub fn graceful_kill(pid: u32) {
     #[cfg(windows)]
     {
         // /T terminates the whole child tree, /F forces termination.
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        hide_console_window(&mut command);
+        let _ = command
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

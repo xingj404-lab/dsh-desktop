@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - "main"
       - "codex/windows-runtime-smoke-test"
     paths:
       - ".github/workflows/windows-smoke.yml"
