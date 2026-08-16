@@ -44,6 +44,38 @@ enum BackendCmd {
     },
 }
 
+/// Convert a Windows verbatim path (`\\?\C:\...` or `\\?\UNC\...`) into
+/// the regular Win32 form expected by Node and other child processes. Tauri's
+/// resolved resource directory may use verbatim syntax even though Node entry
+/// point arguments do not handle it reliably.
+#[cfg(windows)]
+fn child_process_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const VERBATIM: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const UNC: &[u16] = &[b'U' as u16, b'N' as u16, b'C' as u16, b'\\' as u16];
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let Some(rest) = wide.strip_prefix(VERBATIM) else {
+        return path;
+    };
+
+    let normalized = if let Some(unc_rest) = rest.strip_prefix(UNC) {
+        let mut value = vec![b'\\' as u16, b'\\' as u16];
+        value.extend_from_slice(unc_rest);
+        value
+    } else {
+        rest.to_vec()
+    };
+    std::path::PathBuf::from(OsString::from_wide(&normalized))
+}
+
+#[cfg(not(windows))]
+fn child_process_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    path
+}
+
 /// Resolve the backend launch command, in priority order:
 /// 1. `DSH_BIN` env override,
 /// 2. the bundled backend in the app resources (`backend/node` + `backend/node_modules/.../dsh`),
@@ -72,11 +104,14 @@ fn resolve_backend_cmd(app: &AppHandle) -> Result<BackendCmd, String> {
             .join("lib")
             .join("bin.js");
         if node.exists() && script.exists() {
-            return Ok(BackendCmd::Node { node, script });
+            return Ok(BackendCmd::Node {
+                node: child_process_path(node),
+                script: child_process_path(script),
+            });
         }
         let dsh = res.join("backend").join("dsh");
         if dsh.exists() {
-            return Ok(BackendCmd::Direct(dsh));
+            return Ok(BackendCmd::Direct(child_process_path(dsh)));
         }
     }
     if let Ok(out) = Command::new("sh").arg("-c").arg("command -v dsh").output() {
