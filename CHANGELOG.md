@@ -7,6 +7,8 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-16
+
 ### Fixed
 
 - **Windows**: backend startup no longer trusts `USERPROFILE` as its working
