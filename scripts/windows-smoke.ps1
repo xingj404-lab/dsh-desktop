@@ -8,7 +8,6 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $appProcess = $null
 $backend = $null
-$backendProbe = $null
 
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 
@@ -135,52 +134,6 @@ try {
         throw "Installed app is missing bundled node.exe or dsh/lib/bin.js under $installRoot"
     }
 
-    $workspace = "$env:LOCALAPPDATA\ai.deepseek.harness.desktop\backend-workspace"
-    New-Item -ItemType Directory -Force -Path $workspace | Out-Null
-
-    $listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Loopback,
-        0
-    )
-    $listener.Start()
-    $probePort = $listener.LocalEndpoint.Port
-    $listener.Stop()
-    $probeUrl = "http://127.0.0.1:$probePort"
-    $probeStdout = Join-Path $LogDirectory "backend-probe-stdout.txt"
-    $probeStderr = Join-Path $LogDirectory "backend-probe-stderr.txt"
-    $probeArguments = @(
-        "`"$($bundledBin.FullName)`"",
-        "web",
-        "--host", "127.0.0.1",
-        "--port", "$probePort"
-    )
-    $backendProbe = Start-Process -FilePath $bundledNode.FullName `
-        -ArgumentList $probeArguments -WorkingDirectory $workspace -PassThru `
-        -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr
-
-    $probeReady = $false
-    $probeDeadline = (Get-Date).AddSeconds(60)
-    do {
-        Start-Sleep -Seconds 1
-        $backendProbe.Refresh()
-        if ($backendProbe.HasExited) {
-            $probeError = Get-Content $probeStderr -Raw -ErrorAction SilentlyContinue
-            throw "Bundled backend probe exited with code $($backendProbe.ExitCode): $probeError"
-        }
-        try {
-            $response = Invoke-WebRequest -Uri $probeUrl -UseBasicParsing -TimeoutSec 3
-            $probeReady = $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
-        } catch {
-            # The backend is still starting.
-        }
-    } while (-not $probeReady -and (Get-Date) -lt $probeDeadline)
-    if (-not $probeReady) {
-        $probeError = Get-Content $probeStderr -Raw -ErrorAction SilentlyContinue
-        throw "Bundled backend probe did not respond at ${probeUrl}: $probeError"
-    }
-    Stop-Process -Id $backendProbe.Id -Force
-    $backendProbe = $null
-
     $stdoutLog = Join-Path $LogDirectory "app-stdout.txt"
     $stderrLog = Join-Path $LogDirectory "app-stderr.txt"
 
@@ -272,9 +225,6 @@ try {
     throw
 } finally {
     Save-Diagnostics
-    if ($backendProbe -and -not $backendProbe.HasExited) {
-        Stop-Process -Id $backendProbe.Id -Force -ErrorAction SilentlyContinue
-    }
     if ($backend -and $appProcess -and $installRoot) {
         $verifiedBackend = Get-VerifiedBackendProcess -BackendProcessId $backend.ProcessId `
             -ParentProcessId $appProcess.Id -ExpectedInstallRoot $installRoot
