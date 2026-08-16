@@ -168,6 +168,10 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v5
         with:
+          # Smoke diagnostics intentionally contain empty stdout/stderr files.
+          # Only download publishable platform artifacts so those zero-byte
+          # diagnostics are never passed to the GitHub Release API.
+          pattern: dist-*
           path: dist-assets
           merge-multiple: true
 
