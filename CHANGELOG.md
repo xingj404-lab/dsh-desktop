@@ -7,6 +7,8 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-17
+
 ### Changed
 
 - Downloaded updates now appear as a non-invasive button beside the dsh web
