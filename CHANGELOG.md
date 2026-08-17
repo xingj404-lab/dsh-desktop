@@ -7,6 +7,12 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Downloaded updates now appear as a non-invasive button beside the dsh web
+  sidebar settings control. Clicking it installs and restarts immediately,
+  without a second confirmation dialog.
+
 ## [0.1.9] - 2026-08-16
 
 ### Fixed

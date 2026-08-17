@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItem, PredefinedMenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
+    webview::PageLoadEvent,
     AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -77,26 +78,95 @@ struct UpdatePayload {
     version: String,
 }
 
-/// Injected into the webview (idempotent) to show a blue download badge in the
-/// bottom-left corner when an update is available. Clicking it runs the
-/// `install_update` command.
+/// Injected into the webview (idempotent) to show a style-isolated update
+/// button beside the dsh sidebar settings control. It only overlays the page;
+/// no dsh web source or existing DOM node is modified.
 const BADGE_SCRIPT: &str = r#"
 (function () {
   if (window.__dshUpdateBadgeInstalled) return;
   window.__dshUpdateBadgeInstalled = true;
 
   function showBadge(version) {
-    if (document.getElementById("dsh-update-badge")) return;
+    if (document.getElementById("dsh-desktop-update-host")) return;
+
+    var host = document.createElement("div");
+    host.id = "dsh-desktop-update-host";
+    host.setAttribute("style", "position:fixed;left:220px;bottom:18px;z-index:2147483647;pointer-events:none;");
+    var root = host.attachShadow({ mode: "closed" });
     var b = document.createElement("button");
-    b.id = "dsh-update-badge";
     b.title = "发现新版本 v" + version + "，点击更新";
-    b.innerHTML = '<span style="font-size:14px;">\u2B07</span><span>更新</span>';
-    b.setAttribute("style", "position:fixed;left:14px;bottom:14px;z-index:2147483647;display:flex;align-items:center;gap:5px;padding:7px 13px;border-radius:8px;border:none;background:#4D6BFE;color:#fff;font-size:13px;font-weight:500;line-height:1;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.3);");
+    b.textContent = "更新";
+    b.setAttribute("style", "pointer-events:auto;min-width:64px;height:36px;padding:0 17px;border:0;border-radius:18px;background:#2688f7;color:#fff;font:600 14px/36px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);white-space:nowrap;");
+
+    var cachedAnchor = null;
+    var positionFrame = 0;
+    function settingsAnchor() {
+      if (cachedAnchor && cachedAnchor.isConnected) return cachedAnchor;
+      var nodes = document.querySelectorAll('button,a,[role="button"]');
+      for (var i = 0; i < nodes.length; i += 1) {
+        var text = (nodes[i].textContent || "").replace(/\s+/g, "").trim();
+        if (text === "设置" || text.toLowerCase() === "settings") {
+          cachedAnchor = nodes[i];
+          return cachedAnchor;
+        }
+      }
+      return null;
+    }
+
+    function positionBadge() {
+      var anchor = settingsAnchor();
+      if (!anchor) {
+        host.style.left = "220px";
+        host.style.top = "auto";
+        host.style.bottom = "18px";
+        return;
+      }
+
+      var row = anchor;
+      var parent = anchor.parentElement;
+      while (parent) {
+        var parentRect = parent.getBoundingClientRect();
+        if (parentRect.height > 110 || parentRect.width > window.innerWidth * 0.6) break;
+        row = parent;
+        parent = parent.parentElement;
+      }
+      var rect = row.getBoundingClientRect();
+      var width = b.getBoundingClientRect().width || 64;
+      host.style.left = Math.max(12, rect.right - width - 16) + "px";
+      host.style.top = Math.max(8, rect.top + (rect.height - 36) / 2) + "px";
+      host.style.bottom = "auto";
+    }
+
+    function schedulePosition() {
+      if (positionFrame) return;
+      positionFrame = window.requestAnimationFrame(function () {
+        positionFrame = 0;
+        positionBadge();
+      });
+    }
+
     b.addEventListener("click", function () {
       var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-      if (invoke) invoke("install_update").catch(function () {});
+      if (!invoke || b.disabled) return;
+      b.disabled = true;
+      b.textContent = "更新中…";
+      b.style.cursor = "default";
+      b.style.opacity = "0.75";
+      invoke("install_update").catch(function () {
+        b.disabled = false;
+        b.textContent = "更新";
+        b.style.cursor = "pointer";
+        b.style.opacity = "1";
+      });
     });
-    document.body.appendChild(b);
+    root.appendChild(b);
+    document.body.appendChild(host);
+    positionBadge();
+    window.addEventListener("resize", schedulePosition);
+    new MutationObserver(schedulePosition).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
   }
 
   var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
@@ -125,13 +195,17 @@ fn get_update_version(state: tauri::State<'_, AppState>) -> Option<String> {
 }
 
 #[tauri::command]
-fn install_update(app: AppHandle) {
-    std::thread::spawn(move || {
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        state.downloading.store(true, Ordering::SeqCst);
+        if state.downloading.swap(true, Ordering::SeqCst) {
+            return Err("Another update operation is already running.".to_string());
+        }
         let _guard = DownloadGuard(app.clone());
-        prompt_and_install(&app);
-    });
+        install_pending_update(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn build_menu(app: &tauri::App) -> tauri::Result<()> {
@@ -326,19 +400,45 @@ fn prompt_and_install(app: &AppHandle) {
     }
 }
 
+/// Installs a downloaded update immediately. This is only called from the
+/// explicit in-page update button, so no second confirmation is shown.
+fn install_pending_update(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let pending = state.pending.lock().unwrap().take();
+    let Some(pending) = pending else {
+        return Err("No downloaded update is available.".to_string());
+    };
+
+    match pending.update.install(&pending.bytes) {
+        Ok(()) => app.restart(),
+        Err(e) => {
+            // Keep the verified download so the user can retry from the badge
+            // or the application menu without downloading it again.
+            *state.pending.lock().unwrap() = Some(pending);
+            let _ = app
+                .dialog()
+                .message(format!("Install failed: {e}"))
+                .title("DeepSeek Harness")
+                .blocking_show();
+            Err(e.to_string())
+        }
+    }
+}
+
 /// Menu entry: manual check. If an update is already downloaded, prompts to
 /// install; otherwise checks, downloads, then prompts.
 fn check_for_updates(app: AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
+        if state.downloading.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _guard = DownloadGuard(app.clone());
 
         if state.pending.lock().unwrap().is_some() {
             prompt_and_install(&app);
             return;
         }
-
-        state.downloading.store(true, Ordering::SeqCst);
-        let _guard = DownloadGuard(app.clone());
 
         match check_and_download(&app) {
             Ok(Some(pending)) => {
@@ -385,12 +485,10 @@ fn auto_update_check(app: AppHandle) {
         std::thread::sleep(std::time::Duration::from_secs(20));
         loop {
             let state = app.state::<AppState>();
-            let busy = state.downloading.load(Ordering::SeqCst)
-                || state.pending.lock().unwrap().is_some();
-            if !busy {
-                state.downloading.store(true, Ordering::SeqCst);
+            let pending = state.pending.lock().unwrap().is_some();
+            if !pending && !state.downloading.swap(true, Ordering::SeqCst) {
+                let _guard = DownloadGuard(app.clone());
                 let result = check_and_download(&app);
-                state.downloading.store(false, Ordering::SeqCst);
 
                 if let Ok(Some(pending)) = result {
                     let version = pending.version.clone();
@@ -419,6 +517,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = webview.eval(BADGE_SCRIPT);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_backend_url,
             restart_backend,
