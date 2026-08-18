@@ -52,9 +52,11 @@ jobs:
           echo "$LATEST" > dsh-version
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          npm version patch --no-git-tag-version
-          VERSION="$(node -p "require('./package.json').version")"
-          git add dsh-version package.json package-lock.json
+          CURRENT_VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -p "const [a,b,c] = '$CURRENT_VERSION'.split('.').map(Number); [a,b,c + 1].join('.')")"
+          python3 scripts/set-desktop-version.py "$VERSION"
+          python3 scripts/check-desktop-version.py "$VERSION"
+          git add dsh-version package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git commit -m "chore: bump @deepseek-ai/dsh to $LATEST (desktop v$VERSION)"
           git tag "v$VERSION"
           git push origin HEAD

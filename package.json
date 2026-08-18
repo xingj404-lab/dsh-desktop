@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "DeepSeek Harness desktop app — a Tauri shell over the dsh web GUI",
   "type": "module",
   "private": true,

@@ -145,19 +145,29 @@ const BADGE_SCRIPT: &str = r#"
       });
     }
 
+    function showInstallError(error) {
+      b.disabled = false;
+      b.textContent = "更新失败，重试";
+      b.title = "更新失败，点击重试";
+      b.style.cursor = "pointer";
+      b.style.opacity = "1";
+      var message = error && error.message ? error.message : String(error || "未知错误");
+      window.alert("更新失败：" + message);
+    }
+
     b.addEventListener("click", function () {
+      if (b.disabled) return;
       var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-      if (!invoke || b.disabled) return;
+      if (!invoke) {
+        showInstallError("桌面更新接口不可用，请重启应用后重试");
+        return;
+      }
       b.disabled = true;
       b.textContent = "更新中…";
+      b.title = "正在安装更新";
       b.style.cursor = "default";
       b.style.opacity = "0.75";
-      invoke("install_update").catch(function () {
-        b.disabled = false;
-        b.textContent = "更新";
-        b.style.cursor = "pointer";
-        b.style.opacity = "1";
-      });
+      invoke("install_update").catch(showInstallError);
     });
     root.appendChild(b);
     document.body.appendChild(host);
@@ -192,6 +202,19 @@ fn get_update_version(state: tauri::State<'_, AppState>) -> Option<String> {
         .unwrap()
         .as_ref()
         .map(|p| p.version.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BADGE_SCRIPT;
+
+    #[test]
+    fn update_badge_surfaces_install_failures() {
+        assert!(BADGE_SCRIPT.contains("if (!invoke)"));
+        assert!(BADGE_SCRIPT.contains("catch(showInstallError)"));
+        assert!(BADGE_SCRIPT.contains("更新失败，重试"));
+        assert!(BADGE_SCRIPT.contains("window.alert(\"更新失败：\" + message)"));
+    }
 }
 
 #[tauri::command]
@@ -415,11 +438,6 @@ fn install_pending_update(app: &AppHandle) -> Result<(), String> {
             // Keep the verified download so the user can retry from the badge
             // or the application menu without downloading it again.
             *state.pending.lock().unwrap() = Some(pending);
-            let _ = app
-                .dialog()
-                .message(format!("Install failed: {e}"))
-                .title("DeepSeek Harness")
-                .blocking_show();
             Err(e.to_string())
         }
     }

@@ -7,6 +7,15 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-18
+
+### Fixed
+
+- Update installation failures now show a clear retry state and error message
+  instead of making the update button appear unresponsive.
+- Desktop versions are synchronized across npm, Tauri, and Cargo metadata, and
+  release CI now rejects tags whose embedded application version would differ.
+
 ## [0.2.0] - 2026-08-17
 
 ### Changed
